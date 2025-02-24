@@ -131,7 +131,7 @@ uint32_t wnd_bit_count_apx_next(StateApx* self, bool item) {
             }
         }
     }
-    // 减去最老有效桶size的一半以减少误差
+    // 减去最老有效桶size，再+1 
     if (self->oldest_valid_index != -1) {
         self->total_ones -= self->buckets[self->oldest_valid_index].size ;
         self->total_ones ++;
