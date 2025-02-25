@@ -31,7 +31,7 @@ uint64_t wnd_bit_count_apx_new(StateApx* self, uint32_t wnd_size, uint32_t k) {
 
     self->window_size = wnd_size;
     self->k = k;
-    self->max_buckets = k * (int)(log2(self->window_size/k) + 1);
+    self->max_buckets = (k + 1) * ((uint32_t)ceil(log2(wnd_size/k)) + 1);
     self->current_buckets = 0;
     self->current_time = 0;
     uint64_t memory = self->max_buckets * sizeof(Bucket);
@@ -77,6 +77,10 @@ void merge_buckets(StateApx* self) {
             self->buckets[oldest_idx].size *= 2; // 大小翻倍
             self->buckets[oldest_idx].timestamp = self->buckets[next_oldest_idx].timestamp; // 保留较新的时间戳
 
+            if(oldest_idx == 0){
+                self->total_ones = self->total_ones -2 * self->buckets[next_oldest_idx].size + 1;
+            } 
+
             // 移除第二老的桶，向前移动后续桶
             for (int m = next_oldest_idx; m < self->current_buckets - 1; m++) {
                 self->buckets[m] = self->buckets[m + 1];
@@ -102,6 +106,9 @@ uint32_t wnd_bit_count_apx_next(StateApx* self, bool item) {
 //每加入一个新元素，移除过期桶+更新桶的逻辑(使用循环缓冲区优化？)
     // 移除过期桶（从开头检查）
     while (self->current_buckets > 0 && (self->current_time - self->buckets[0].timestamp >= self->window_size)) {
+
+        self->total_ones = self->total_ones - self->buckets[0].size;
+
         for (int i = 0; i < self->current_buckets - 1; i++) {
             self->buckets[i] = self->buckets[i + 1];
         }
@@ -115,29 +122,12 @@ uint32_t wnd_bit_count_apx_next(StateApx* self, bool item) {
         self->buckets[self->current_buckets].size = 1;
         self->buckets[self->current_buckets].timestamp = self->current_time;
         self->current_buckets++;
+        self->total_ones ++;
         merge_buckets(self); // 检查并合并
     }
 
 
-// 估计窗口内1的数量
-    self->total_ones = 0;
-    self->oldest_valid_index = -1;
-    // 遍历所有桶，累加有效桶的size
-    for (int i = 0; i < self->current_buckets; i++) {
-        if (self->current_time - self->buckets[i].timestamp < self->window_size) {
-            self->total_ones += self->buckets[i].size;
-            if (self->oldest_valid_index == -1) {
-                self->oldest_valid_index = i; // 记录最老的有效桶
-            }
-        }
-    }
-    // 减去最老有效桶size，再+1 
-    if (self->oldest_valid_index != -1) {
-        self->total_ones -= self->buckets[self->oldest_valid_index].size ;
-        self->total_ones ++;
-    }
-    printf("第%i个,值 %u: 估计1的个数 = %u, 当前桶数 = %u\n", self->current_time-1,
-        item, self->total_ones, self->current_buckets);
+
 
     return self->total_ones;
 }
