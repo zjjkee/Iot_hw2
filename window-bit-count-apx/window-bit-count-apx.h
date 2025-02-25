@@ -81,76 +81,70 @@ void merge_buckets(StateApx* self) {
     // If fewer than 3 buckets, no merging needed
     if (self->bucket_count < 3) return;
 
-    bool changed = true;
-    while (changed) {
-        changed = false;
 
-        // Count consecutive buckets of the same size and track oldest/next oldest
-        uint32_t consecutive = 1;            // Current count of consecutive buckets of the same size
-        uint32_t cur_size = 1;               // Current size being tracked
-        int pos = self->bucket_count - 2;     // Position before the newest bucket
+    // Count consecutive buckets of the same size and track oldest/next oldest
+    uint32_t consecutive = 1;            // Current count of consecutive buckets of the same size
+    uint32_t cur_size = 1;               // Current size being tracked
+    int pos = self->bucket_count - 2;     // Position before the newest bucket
 
-        // Use while(true) + break to ensure full merging
-        while (pos >= 0) {
-            Bucket* b = &self->buckets[pos];
-            if (b->size == cur_size) {
-                consecutive++;
-                if (consecutive > (self->k + 1)) {
-                    // Merge b and b+1
-                    self->buckets[pos].size *= 2;
+    // Use while(true) + break to ensure full merging
+    while (pos >= 0) {
+        Bucket* b = &self->buckets[pos];
+        if (b->size == cur_size) {
+            consecutive++;
+            if (consecutive > (self->k + 1)) {
+                // Merge b and b+1
+                self->buckets[pos].size *= 2;
 
-                    // oldest_time takes the earlier timestamp
-                    Bucket* next_b = &self->buckets[pos + 1];
-                    if (next_b->oldest_time < b->oldest_time) {
-                        b->oldest_time = next_b->oldest_time;
-                    }
-                    // newest_time takes the later timestamp
-                    if (next_b->newest_time > b->newest_time) {
-                        b->newest_time = next_b->newest_time;
-                    }
-                    // Remove next_b
-                    uint32_t move_count = self->bucket_count - (pos + 2);
-                    if (move_count > 0) {
-                        memmove(&self->buckets[pos + 1],
-                                &self->buckets[pos + 2],
-                                move_count * sizeof(Bucket));
-                    }
-                    self->bucket_count--;
-                    N_MERGES++;
-
-                    // After merging, size doubles, possibly requiring further merging
-                    cur_size = b->size;
-                    consecutive = 1;
-                    // Keep pos unchanged to recheck this position (previous buckets might be the same size)
-                } else {
-                    pos--;
+                // oldest_time takes the earlier timestamp
+                Bucket* next_b = &self->buckets[pos + 1];
+                if (next_b->oldest_time < b->oldest_time) {
+                    b->oldest_time = next_b->oldest_time;
                 }
-            } else {
-                // Size changed, reset
+                // newest_time takes the later timestamp
+                if (next_b->newest_time > b->newest_time) {
+                    b->newest_time = next_b->newest_time;
+                }
+                // Remove next_b
+                uint32_t move_count = self->bucket_count - (pos + 2);
+                if (move_count > 0) {
+                    memmove(&self->buckets[pos + 1],
+                            &self->buckets[pos + 2],
+                            move_count * sizeof(Bucket));
+                }
+                self->bucket_count--;
+                N_MERGES++;
+
+                // After merging, size doubles, possibly requiring further merging
                 cur_size = b->size;
                 consecutive = 1;
+                // Keep pos unchanged to recheck this position (previous buckets might be the same size)
+            } else {
                 pos--;
             }
+        } else {
+            // Size changed, reset
+            cur_size = b->size;
+            consecutive = 1;
+            pos--;
         }
     }
+    
 }
 
 
 // Update buckets: Handle new bit, remove expired buckets, and insert if needed
 void update_buckets(StateApx* self, bool item) {
-    // 1. Increment time
-    self->current_time++;
 
-    // 2. Use binary search to batch remove expired buckets
-    //    cutoff = current_time - wnd_size, if newest_time <= cutoff, the bucket expires
-    uint32_t cutoff = (self->current_time > self->wnd_size)
-        ? (self->current_time - self->wnd_size)
-        : 0;
+
+    // Use binary search to batch remove expired buckets
+    //    cut_point = current_time - wnd_size, if newest_time <= cut_point, the bucket expires
+    uint32_t cut_point = (self->current_time > self->wnd_size) ? (self->current_time - self->wnd_size) : 0;
 
     uint32_t left = 0, right = self->bucket_count;
     while (left < right) {
         uint32_t mid = left + (right - left) / 2;
-        if (self->buckets[mid].newest_time <= cutoff) {
+        if (self->buckets[mid].newest_time <= cut_point) {
             left = mid + 1;
         } else {
             right = mid;
@@ -201,6 +195,9 @@ void update_buckets(StateApx* self, bool item) {
 //  1) Increment current_time
 //  2) Update buckest(including 1.remove the expired buckets; 2.add new bit into the buckets + merge operation;3.3) If item=1, insert a new bucket and trigger a full merge)
 uint32_t wnd_bit_count_apx_next(StateApx* self, bool item) {
+
+    // Increment time
+    self->current_time++;
     // Update buckets with the new bit
     update_buckets(self, item);
 

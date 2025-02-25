@@ -6,9 +6,13 @@
 #include "../utils.h"
 #include "window-bit-count-apx.h"
 
-#define W 100000000 // window size
-#define N 1000000000 // stream length
-#define K 1000 // relative error = 1 / K
+// #define W 100000000 // window size
+// #define N 1000000000 // stream length
+// #define K 1000 // relative error = 1 / K
+#define W 1000 // window size
+#define N 1000000 // stream length
+#define K 100 // relative error = 1 / K
+
 
 int main() {
     char scratch[100];
