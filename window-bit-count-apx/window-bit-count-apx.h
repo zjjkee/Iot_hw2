@@ -77,9 +77,7 @@ void merge_buckets(StateApx* self) {
             self->buckets[oldest_idx].size *= 2; // 大小翻倍
             self->buckets[oldest_idx].timestamp = self->buckets[next_oldest_idx].timestamp; // 保留较新的时间戳
 
-            if(oldest_idx == 0){
-                self->total_ones = self->total_ones -2 * self->buckets[next_oldest_idx].size + 1;
-            } 
+
 
             // 移除第二老的桶，向前移动后续桶
             for (int m = next_oldest_idx; m < self->current_buckets - 1; m++) {
@@ -97,12 +95,7 @@ void merge_buckets(StateApx* self) {
     }
 }
 
-
-
-
-uint32_t wnd_bit_count_apx_next(StateApx* self, bool item) {
-    self->current_time++;
-
+void update_buckets(StateApx* self, bool item) {
 //每加入一个新元素，移除过期桶+更新桶的逻辑(使用循环缓冲区优化？)
     // 移除过期桶（从开头检查）
     while (self->current_buckets > 0 && (self->current_time - self->buckets[0].timestamp >= self->window_size)) {
@@ -126,10 +119,22 @@ uint32_t wnd_bit_count_apx_next(StateApx* self, bool item) {
         merge_buckets(self); // 检查并合并
     }
 
+}
 
 
+uint32_t wnd_bit_count_apx_next(StateApx* self, bool item) {
+    self->current_time++;
 
-    return self->total_ones;
+    update_buckets(self, item);
+
+    uint32_t last_output_apx = self->total_ones;
+    if (self->current_buckets > 0) {
+        uint32_t half = self->buckets[0].size / 2;
+
+        last_output_apx = last_output_apx - half ;
+    }
+
+    return last_output_apx;
 }
 
 void wnd_bit_count_apx_print(StateApx* self) {
