@@ -1,138 +1,218 @@
+#ifndef _WINDOW_BIT_COUNT_APX_
+#define _WINDOW_BIT_COUNT_APX_
+
 #include <stdio.h>
 #include <assert.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <math.h>
+#include <string.h>
 
-uint64_t N_MERGES = 0; // Track bucket merges
+////////////////////////////////////////////////////////////////////////////////
+// Global merge count for debugging purposes only
+////////////////////////////////////////////////////////////////////////////////
+uint64_t N_MERGES = 0;
 
+////////////////////////////////////////////////////////////////////////////////
+// Bucket structure:
+//  oldest_time : Timestamp of the earliest 1 in the bucket
+//  newest_time : Timestamp of the latest 1 in the bucket
+//  size        : Total number of 1s in this bucket
+////////////////////////////////////////////////////////////////////////////////
 typedef struct {
-    uint32_t size;      // Bucket size (number of 1’s)
-    uint32_t timestamp; // Bucket timestamp
+    uint32_t oldest_time;
+    uint32_t newest_time;
+    uint32_t size;
 } Bucket;
 
-typedef struct {
-    uint32_t window_size;        // 窗口大小 W
-    uint32_t k;        // Max same-size buckets
-    uint32_t max_buckets; //Estimated maximum of number of  buckets;
-    uint32_t current_buckets;    // 当前桶数量
-    uint32_t current_time;   // 当前时间戳
-
-    Bucket* buckets;    // Bucket array
-
-    uint32_t total_ones;   // Total 1’s in window
-    uint32_t oldest_valid_index; // Oldest bucket index
+      //
+typedef struct {       // StateApx: Holds the state of the sliding window counter
+    uint32_t wnd_size;       // Window size W
+    uint32_t k;        // Merge threshold (merge if consecutive buckets of the same size > k+1)
+    uint32_t current_time;       //Timestamp of the processed bit (increments by 1 per bit received)
+    uint32_t count;       //Total number of 1s represented by all buckets
+    uint32_t bucket_count;      // Number of buckets actually used in buckets[]
+    Bucket*  buckets;        //Bucket array (allocated once during initialization)
+    uint32_t total_bucket;       //Capacity limit of the buckets[] array
 } StateApx;
 
+
+// Initialization:
+//1. Allocate a buckets[] array of size (k+1)*(log(wnd_size / k)+1)
+//2. Return the number of bytes allocated
 uint64_t wnd_bit_count_apx_new(StateApx* self, uint32_t wnd_size, uint32_t k) {
-    assert(wnd_size >= 1);
-    assert(k >= 1);
+    assert(wnd_size >= 1 && k >= 1);
 
-    self->window_size = wnd_size;
+    self->wnd_size = wnd_size;
     self->k = k;
-    self->max_buckets = (k + 1) * ((uint32_t)ceil(log2(wnd_size/k)) + 1);
-    self->current_buckets = 0;
     self->current_time = 0;
-    uint64_t memory = self->max_buckets * sizeof(Bucket);
-    self->buckets = (Bucket*)malloc(memory);
- 
-    self->total_ones = 0;
-    self->oldest_valid_index = -1;
-    if (!self->buckets) {
-        fprintf(stderr, "Memory allocation failed!\n");
-        exit(1);
-    }
-    for (int i = 0; i <  self->max_buckets; i++) {
-        self->buckets[i].size = 0;
-        self->buckets[i].timestamp = -1; // 表示未使用
-    }
+    self->count = 0;
+    self->bucket_count = 0;
 
+    // Buckets maximum  capacity
+    if (self->k < self->wnd_size) {
+    }
+    self->total_bucket = (k + 1) * ((uint32_t)ceil(log2((double)wnd_size / k)) + 1);
 
-    return memory;
+    uint32_t mem = self->total_bucket * sizeof(Bucket);
+    self->buckets = (Bucket*)malloc(mem);
+    assert(self->buckets != NULL);
+
+    return mem;
 }
 
+
+// Destructor: Free the buckets array
 void wnd_bit_count_apx_destruct(StateApx* self) {
     free(self->buckets);
     self->buckets = NULL;
 }
 
-// 合并相同大小的桶（最多保留 k + 1 个，从新->旧）
+
+// (Optional) Debug print
+void wnd_bit_count_apx_print(StateApx* self) {
+//TO DO
+}
+
+
+// Merge buckets: Ensure no more than k+1 buckets of the same size exist
 void merge_buckets(StateApx* self) {
-    int i = self->current_buckets - 1; // 从最新桶开始（数组末尾）
-    while (i >= 2) { // 至少需要三个桶才能合并
-        // 检查从最新到最旧的连续桶是否大小相同
-        int count = 1;
-        int j = i - 1;
-        while (j >= 0 && self->buckets[j].size == self->buckets[i].size) {
-            count++;
-            j--;
-        }
-        if (count >= self->k + 2) { // 如果数量达到 k + 2，则合并最老的两个桶
-            // 找到最老的两个桶（j + 1 和 j + 2）
-            int oldest_idx = j + 1; // 最老的桶
-            int next_oldest_idx = j + 2; // 第二老的桶
+    // If fewer than 3 buckets, no merging needed
+    if (self->bucket_count < 3) return;
 
-            // 合并最老的两个桶
-            self->buckets[oldest_idx].size *= 2; // 大小翻倍
-            self->buckets[oldest_idx].timestamp = self->buckets[next_oldest_idx].timestamp; // 保留较新的时间戳
+    bool changed = true;
+    while (changed) {
+        changed = false;
 
-            if(oldest_idx == 0){
-                self->total_ones = self->total_ones -2 * self->buckets[next_oldest_idx].size + 1;
-            } 
+        // Count consecutive buckets of the same size and track oldest/next oldest
+        uint32_t consecutive = 1;            // Current count of consecutive buckets of the same size
+        uint32_t cur_size = 1;               // Current size being tracked
+        int pos = self->bucket_count - 2;     // Position before the newest bucket
 
-            // 移除第二老的桶，向前移动后续桶
-            for (int m = next_oldest_idx; m < self->current_buckets - 1; m++) {
-                self->buckets[m] = self->buckets[m + 1];
+        // Use while(true) + break to ensure full merging
+        while (pos >= 0) {
+            Bucket* b = &self->buckets[pos];
+            if (b->size == cur_size) {
+                consecutive++;
+                if (consecutive > (self->k + 1)) {
+                    // Merge b and b+1
+                    self->buckets[pos].size *= 2;
+
+                    // oldest_time takes the earlier timestamp
+                    Bucket* next_b = &self->buckets[pos + 1];
+                    if (next_b->oldest_time < b->oldest_time) {
+                        b->oldest_time = next_b->oldest_time;
+                    }
+                    // newest_time takes the later timestamp
+                    if (next_b->newest_time > b->newest_time) {
+                        b->newest_time = next_b->newest_time;
+                    }
+                    // Remove next_b
+                    uint32_t move_count = self->bucket_count - (pos + 2);
+                    if (move_count > 0) {
+                        memmove(&self->buckets[pos + 1],
+                                &self->buckets[pos + 2],
+                                move_count * sizeof(Bucket));
+                    }
+                    self->bucket_count--;
+                    N_MERGES++;
+
+                    // After merging, size doubles, possibly requiring further merging
+                    cur_size = b->size;
+                    consecutive = 1;
+                    // Keep pos unchanged to recheck this position (previous buckets might be the same size)
+                } else {
+                    pos--;
+                }
+            } else {
+                // Size changed, reset
+                cur_size = b->size;
+                consecutive = 1;
+                pos--;
             }
-            self->current_buckets--;
-            self->buckets[self->current_buckets].size = 0; // 标记为未使用
-            self->buckets[self->current_buckets].timestamp = -1;
-
-            // 重新从最新桶开始检查（可能触发级联合并）
-            i = self->current_buckets - 1;
-        } else {
-            i--; // 继续向左检查
         }
     }
 }
 
 
-
-
-uint32_t wnd_bit_count_apx_next(StateApx* self, bool item) {
+// Update buckets: Handle new bit, remove expired buckets, and insert if needed
+void update_buckets(StateApx* self, bool item) {
+    // 1. Increment time
     self->current_time++;
 
-//每加入一个新元素，移除过期桶+更新桶的逻辑(使用循环缓冲区优化？)
-    // 移除过期桶（从开头检查）
-    while (self->current_buckets > 0 && (self->current_time - self->buckets[0].timestamp >= self->window_size)) {
+    // 2. Use binary search to batch remove expired buckets
+    //    cutoff = current_time - wnd_size, if newest_time <= cutoff, the bucket expires
+    uint32_t cutoff = (self->current_time > self->wnd_size)
+        ? (self->current_time - self->wnd_size)
+        : 0;
 
-        self->total_ones = self->total_ones - self->buckets[0].size;
-
-        for (int i = 0; i < self->current_buckets - 1; i++) {
-            self->buckets[i] = self->buckets[i + 1];
+    uint32_t left = 0, right = self->bucket_count;
+    while (left < right) {
+        uint32_t mid = left + (right - left) / 2;
+        if (self->buckets[mid].newest_time <= cutoff) {
+            left = mid + 1;
+        } else {
+            right = mid;
         }
-        self->current_buckets--;
-        self->buckets[self->current_buckets].size = 0;
-        self->buckets[self->current_buckets].timestamp = -1;
-        N_MERGES++;
-    }
-    // 如果新比特是1，添加新桶到末尾
-    if (item == 1 && self->current_buckets < self->max_buckets) {
-        self->buckets[self->current_buckets].size = 1;
-        self->buckets[self->current_buckets].timestamp = self->current_time;
-        self->current_buckets++;
-        self->total_ones ++;
-        merge_buckets(self); // 检查并合并
     }
 
+    // left is the number of expired buckets
+    if (left > 0) {
+        // Calculate the total size of expired buckets
+        uint32_t expired_sum = 0;
+        for (uint32_t i = 0; i < left; i++) {
+            expired_sum += self->buckets[i].size;
+        }
+        self->count -= expired_sum;
 
+        // Move remaining buckets
+        uint32_t remain = self->bucket_count - left;
+        if (remain > 0) {
+            memmove(self->buckets, &self->buckets[left],
+                    remain * sizeof(Bucket));
+        }
+        self->bucket_count = remain;
+    }
 
+    // 3. If the bit is 1, insert a new bucket (size=1) and trigger a full merge
+    if (item) {
+        // Capacity check
+        if (self->bucket_count >= self->total_bucket) {
+            fprintf(stderr, "Bucket overflow! capacity=%u\n", self->total_bucket);
+            exit(EXIT_FAILURE);
+        }
 
-    return self->total_ones;
+        // Insert new bucket
+        Bucket* new_b = &self->buckets[self->bucket_count];
+        new_b->oldest_time = self->current_time;
+        new_b->newest_time = self->current_time;
+        new_b->size = 1;
+        self->bucket_count++;
+        self->count++;
+
+        // Call merge function to handle bucket merging
+        merge_buckets(self);
+    }
 }
 
-void wnd_bit_count_apx_print(StateApx* self) {
-    // 打印state
 
+// main function: Process the next bit in the stream
+//  1) Increment current_time
+//  2) Update buckest(including 1.remove the expired buckets; 2.add new bit into the buckets + merge operation;3.3) If item=1, insert a new bucket and trigger a full merge)
+uint32_t wnd_bit_count_apx_next(StateApx* self, bool item) {
+    // Update buckets with the new bit
+    update_buckets(self, item);
+
+    // Compute approximation: approx = count - oldest.size/2 
+    uint32_t last_output_apx = self->count;
+    if (self->bucket_count > 0) {
+        uint32_t half = self->buckets[0].size / 2;
+
+        last_output_apx -= half;
+    }
+
+    return last_output_apx;
 }
+
+#endif // _WINDOW_BIT_COUNT_APX_
